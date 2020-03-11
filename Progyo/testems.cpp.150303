@@ -1,0 +1,254 @@
+#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <resolv.h>
+#include <string.h>
+#include <errno.h>
+
+//#include <boost/unordered/unordered_map.hpp>
+//#include "../EmsServer/EmsMX.h"
+#include <boost/shared_ptr.hpp>
+
+const size_t SZ_IP4ADDRESS  = 15;
+const size_t size           = NS_MAXDNAME;  // 1025
+const size_t SZ_TMP_BUFFER  = 4096;
+
+
+using namespace boost;
+using namespace std;
+
+typedef struct _MXRecord *MXPtr;
+typedef struct _MXRecord {
+	_MXRecord(){
+		ns_pref = 0;
+		//memset(ns_name, '\0', NS_MAXDNAME);
+		memset(ns_addr, '\0', SZ_IP4ADDRESS+1);
+	};
+	
+	int  ns_pref;
+	char ns_name[NS_MAXDNAME];
+	char ns_addr[SZ_IP4ADDRESS+1];
+}MXRecord;
+
+//--------------------------------------------------
+// types
+//typedef struct MXRecord *MXPtr, **MXRef;
+//typedef struct MXRecord
+//{
+//   int  pref;
+//   char name[NS_MAXDNAME]; // 1025bytes
+//} MXRecord;
+
+
+typedef struct MXRecordList *MXListPtr;
+typedef struct MXRecordList
+{
+   int   count;
+   MXPtr entry[];
+} MXRecordList;
+//--------------------------------------------------
+
+// code for looking up the MX hosts for a given domain
+// returns an array of MXRecords sorted by preferences
+int MXCompare(const void *A, const void *B)
+{
+//	 int a = (*(MXRef)A)->pref;
+//   int b = (*(MXRef)B)->pref;
+	 int a = ((MXRecord*)A)->ns_pref;
+   int b = ((MXRecord*)B)->ns_pref;
+
+   if (a < b)
+      return -1;
+   else if (a > b)
+      return  1;
+   else
+      return  0;
+}
+
+MXListPtr MXLookup(const char *domainName)
+{
+   int i, responseLen, resourceRecordCount;
+   unsigned char response[SZ_TMP_BUFFER];
+
+   ns_msg    msgHandle;
+   ns_rr     resourceRecord;
+
+   MXPtr     MX;
+   MXListPtr MXList = (MXListPtr)malloc(sizeof(int)); 
+   MXList->count = 0;
+
+   if ( (responseLen = res_query(domainName, ns_c_in, ns_t_mx, response, SZ_TMP_BUFFER)) > 0 ) 
+   {
+      if (ns_initparse(response, responseLen, &msgHandle) == 0)
+      {
+         resourceRecordCount = ns_msg_count(msgHandle, ns_s_an);
+         for(i = 0; i < resourceRecordCount; i++)
+         {
+            if (ns_parserr(&msgHandle, ns_s_an, i, &resourceRecord) == 0 && ns_rr_type(resourceRecord) == ns_t_mx)
+            {
+               MXList = (MXListPtr)realloc(MXList, sizeof(int) + (MXList->count + 1)*sizeof(MXPtr));
+               MXList->entry[MXList->count++] = MX = (MXPtr)calloc(1, sizeof(MXRecord));
+               MX->ns_pref = ns_get16(ns_rr_rdata(resourceRecord));
+               ns_name_uncompress(ns_msg_base(msgHandle), ns_msg_end(msgHandle), ns_rr_rdata(resourceRecord) + NS_INT16SZ, MX->ns_name, NS_MAXDNAME);
+            }
+         }
+      }
+   }
+
+   if (MXList->count > 1)
+      qsort(&MXList->entry[0], MXList->count, sizeof(MXPtr), MXCompare);
+   return MXList;
+}
+
+
+bool getMXfromDNS(const char * dname)
+{
+   if(dname != NULL){
+      u_char nsbuf[SZ_TMP_BUFFER]={0,};
+      char dispbuf[SZ_TMP_BUFFER]={0,};
+      ns_msg msg;
+      ns_rr rr;
+      int  j;
+      
+
+      int retval = res_query (dname, C_IN, T_MX, nsbuf, sizeof (nsbuf));
+      cout << "Return res_query : " << retval << endl;
+
+      if (retval == -1) 
+      {
+         perror (dname);
+      } 
+      else 
+      {
+          
+          const u_char *data = NULL;
+          HEADER *hdr = reinterpret_cast<HEADER*> (nsbuf);
+          int question = ntohs (hdr->qdcount);
+          int answers = ntohs (hdr->ancount);
+          int nameservers = ntohs (hdr->nscount);
+          int addresscords = ntohs (hdr->arcount);
+//          cout << "question: " << question << endl;
+//          cout << "answers : " << answers << endl;
+//          cout << "namesvr : " << nameservers << endl;
+//          cout << "addresscodes: " << addresscords << endl;
+          
+          int ret_nsip = ns_initparse (nsbuf, retval, &msg);
+          if( ret_nsip  == -1 ){
+          	std::cerr << errno << " " << strerror (errno) << "\n";
+
+          	printf("ret_nsip return[%d] : %s\n", errno, strerror (errno));
+          	return -1;
+          }
+          else
+          	cout << "ns_initparse return value : " <<  ret_nsip << endl;
+          	
+          //l = ns_msg_count (msg, ns_s_an);
+            for (int i = 0; i < answers; ++i) {
+              ns_rr rr;
+              //int ak = ns_parserr (&msg, ns_s_qd, i, &rr);
+              int ak = ns_parserr (&msg, ns_s_an, i, &rr);
+              if (ak == -1) {
+                 std::cerr << errno << " " << strerror (errno) << "\n";
+                 return 1;
+              }
+              //std::cout << "rr_name : " << ns_rr_name (rr) << endl;  //ns_rr_name(rr) = Domain Name
+              std::cout << "rr_type : " << ns_rr_type (rr) << endl;    
+              //std::cout << "rr_class: " << ns_rr_class (rr) << endl;
+   
+                unsigned char name[NS_MAXDNAME]={0,};
+                
+                data = ns_rr_rdata(rr);
+                int pref = ns_get16(data);
+                char name2[NS_MAXDNAME]={0,};
+                ns_name_unpack(nsbuf, nsbuf+retval, data+sizeof(u_int16_t), name, NS_MAXDNAME);
+                ns_name_ntop(name, name2, NS_MAXDNAME);
+                //name2[strlen(name2)]='\0';
+                std::cout << "pref : " <<  pref << " Server Name : " << name2  << endl;
+            }
+
+/*/          int  k = 0;
+          for (j = 0; j < answers; j++) {
+            k = ns_parserr (&msg, ns_s_ns, j, &rr);
+            cout << "1)ns_rr_name " << ns_rr_name(rr) << endl;
+            cout << "2)ns_rr_type " << ns_rr_type(rr) << endl;
+            cout << "3)ns_rr_class " << ns_rr_class(rr) << endl;
+            cout << "4)ns_rr_ttl " << ns_rr_ttl(rr) << endl;
+
+            data = ns_rr_rdata(rr);
+            //cout << "data : " << data << endl;
+            cout <<  "NS_MAXDNAME : " << NS_MAXDNAME << endl;
+            unsigned char name[size];
+            int t = ns_rr_type(rr);
+            cout << "t : " << t << " : " << " T_MX : "<< T_MX << " T_A : "<< T_A  << " T_NS : "<< T_NS << endl;
+
+            if(t == T_MX){
+              cout <<  "NS_MAXDNAME : " << NS_MAXDNAME << endl;
+              int pref = ns_get16(data);
+              ns_name_unpack(nsbuf, nsbuf+retval, data+sizeof(u_int16_t), name, size);
+              char name2[size];
+              ns_name_ntop(name, name2, size);
+              std::cout << "pref : " << pref << endl;
+              std::cout << "name : " << name << endl;
+              std::cout << "name2: " << name2  << endl;
+            }
+            else if (t == T_NS) {
+              ns_name_unpack (nsbuf, nsbuf+retval, data, name, size);
+              char name2[size];
+              ns_name_ntop (name, name2, size);
+              std::cout << "T_NS : " << name2 << endl;
+            }
+
+            int nssplen = ns_sprintrr (&msg, &rr, NULL, NULL, dispbuf, sizeof (dispbuf));
+            //printf("(2)message  : %s\n", rr.name);
+            printf ("[%d]%s\n", nssplen, dispbuf);
+        }
+*/        
+      }
+	
+	  return true;
+	}
+	else 
+		return false;
+}
+	
+int main (int argc, char *argv[])
+{
+	const char * dname = "gabia.com";
+	//const char * dname = "naver.com";
+	shared_ptr<char> m_spDomainName;
+	
+		int    nameLen = strlen(dname);
+		char * tmpDomainName = new char[nameLen+1] ;
+		memset(tmpDomainName,'\0', (nameLen+1));
+
+		strcpy(tmpDomainName, dname);
+	
+		if(m_spDomainName.get() != NULL){
+			cout << "reset" << endl;
+			m_spDomainName.reset(tmpDomainName);
+		}
+		else{
+			cout << "push" << endl;
+			m_spDomainName.reset(tmpDomainName);
+		}
+		const char  * tmpcname = m_spDomainName.get() ;
+		cout << "Domain Name : " << tmpcname<< endl;
+		
+		//getMXfromDNS(dname);
+		MXListPtr rlist = MXLookup(dname);
+		if(rlist == NULL){
+			cout << "return rlist is nul" << endl;
+		}
+		else{
+			for(int i=0; i< rlist->count; i++){
+				cout << "["<< rlist->entry[i]->ns_pref << "] [" << rlist->entry[i]->ns_name << "] [" << rlist->entry[i]->ns_addr << "]" <<  endl;
+			}
+			delete rlist;
+		}
+		
+	return 0;
+
+}
+

@@ -1,0 +1,7 @@
+daum.net,
+hotmail.com,
+naver.com,
+freechal.com,
+nate.com,
+outlook.com,
+gmail.com
